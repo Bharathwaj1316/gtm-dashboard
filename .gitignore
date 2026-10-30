@@ -1,0 +1,6 @@
+# Raw exports contain personal data (names, phone numbers) - never commit
+data/
+.browser_profile/
+scraper/debug/
+logs/
+__pycache__/
