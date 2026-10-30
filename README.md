@@ -17,7 +17,7 @@ greentnmission.com/Export  --(scraper, every 30 min)-->  docs/summary.json  --> 
    per district, department and financial year into `docs/summary.json`.
    Only counts are published; raw exports with personal data stay local.
 3. `scraper/run.py` runs both and commits/pushes `docs/summary.json` when the data changes.
-4. `docs/summary_table.html` loads the JSON and reloads it every 30 minutes.
+4. `docs/index.html` (the summary table) loads the JSON and reloads it every 30 minutes.
 
 ## Setup (Windows)
 

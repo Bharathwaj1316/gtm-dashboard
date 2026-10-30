@@ -2,8 +2,200 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0; url=summary_table.html">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Geotag Summary Table</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
+<style>
+  :root { --green: #1b7a43; --green-soft: #e8f5ee; --border: #dfe5e1; }
+  body { font-family: 'Inter', sans-serif; background: #f4f7f5; color: #1f2a24; }
+  .page { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin: 0; }
+  .sub { color: #5d6b63; font-size: .9rem; }
+  .card-box { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .kpi .label { font-size: .78rem; color: #5d6b63; text-transform: uppercase; letter-spacing: .03em; }
+  .kpi .value { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi.total { background: var(--green); color: #fff; border-color: var(--green); }
+  .kpi.total .label { color: #d6efe0; }
+  .table-wrap { overflow-x: auto; }
+  table.summary { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  .summary th, .summary td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .summary thead th { background: var(--green); color: #fff; font-weight: 600; position: sticky; top: 0; cursor: pointer; user-select: none; }
+  .summary thead th.num, .summary td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .summary thead th .arrow { opacity: .6; font-size: .75em; margin-left: 4px; }
+  .summary tbody tr:hover { background: var(--green-soft); }
+  .summary td.total, .summary tfoot td { font-weight: 700; }
+  .summary tfoot td { background: var(--green-soft); border-top: 2px solid var(--green); }
+  .zero { color: #aab4ae; }
+  .status { font-size: .85rem; }
+  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2fb36a; margin-right: 6px; }
+  .status.error .dot { background: #d9534f; }
+</style>
 </head>
-<body><a href="summary_table.html">Open the Geotag Summary Table</a></body>
+<body>
+<div class="page">
+  <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mb-3">
+    <div>
+      <h1>Geotag Summary Table</h1>
+      <div class="sub">District-wise planting geotags across 5 departments · Green Tamil Nadu Mission</div>
+    </div>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Loading…</span></div>
+  </div>
+
+  <div class="card-box mb-3 d-flex flex-wrap gap-3 align-items-end">
+    <div>
+      <label class="form-label small mb-1" for="yearFilter">Financial year</label>
+      <select class="form-select form-select-sm" id="yearFilter"><option value="all">All years</option></select>
+    </div>
+    <div>
+      <label class="form-label small mb-1" for="metric">Show</label>
+      <select class="form-select form-select-sm" id="metric">
+        <option value="geotags">Geotag count</option>
+        <option value="seedlings">Seedlings</option>
+      </select>
+    </div>
+    <div>
+      <label class="form-label small mb-1" for="search">District</label>
+      <input class="form-control form-control-sm" id="search" placeholder="Search district">
+    </div>
+    <div class="ms-auto d-flex gap-2">
+      <button class="btn btn-outline-success btn-sm" id="refreshBtn">Refresh now</button>
+      <button class="btn btn-success btn-sm" id="exportBtn">Export to Excel</button>
+    </div>
+  </div>
+
+  <div class="kpis mb-3" id="kpis"></div>
+
+  <div class="card-box">
+    <div class="table-wrap">
+      <table class="summary" id="summaryTable">
+        <thead><tr id="headRow"></tr></thead>
+        <tbody id="tableBody"></tbody>
+        <tfoot><tr id="footRow"></tr></tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const DATA_URL = 'summary.json';
+const REFRESH_MS = 30 * 60 * 1000;
+
+let data = null;
+let sort = { col: 'district', dir: 1 };
+
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString('en-IN');
+
+async function load() {
+  try {
+    const res = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+    fillYears();
+    render();
+    const updated = new Date(data.updated);
+    setStatus(`Data updated ${updated.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`);
+  } catch (err) {
+    setStatus(`Could not load data (${err.message}). Showing last loaded values.`, true);
+  }
+}
+
+function setStatus(text, error = false) {
+  $('statusText').textContent = text;
+  $('status').classList.toggle('error', error);
+}
+
+function fillYears() {
+  const sel = $('yearFilter');
+  const current = sel.value;
+  const years = data.years.filter(y => y !== 'Unknown').sort().reverse();
+  if (data.years.includes('Unknown')) years.push('Unknown');
+  sel.innerHTML = '<option value="all">All years</option>' +
+    years.map(y => `<option value="${y}">${y}</option>`).join('');
+  sel.value = [...sel.options].some(o => o.value === current) ? current : 'all';
+}
+
+function aggregate() {
+  const year = $('yearFilter').value;
+  const metric = $('metric').value === 'seedlings' ? 4 : 3;
+  const depts = data.departments.map(d => d.key);
+  const byDistrict = Object.fromEntries(
+    data.districts.map(d => [d, Object.fromEntries(depts.map(k => [k, 0]))])
+  );
+  for (const row of data.rows) {
+    if (year !== 'all' && row[2] !== year) continue;
+    byDistrict[row[0]][row[1]] += row[metric];
+  }
+  return Object.entries(byDistrict).map(([district, vals]) => ({
+    district, ...vals, total: depts.reduce((s, k) => s + vals[k], 0)
+  }));
+}
+
+function visibleRows() {
+  const q = $('search').value.trim().toUpperCase();
+  const rows = aggregate().filter(r => !q || r.district.includes(q));
+  rows.sort((a, b) => {
+    const x = a[sort.col], y = b[sort.col];
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sort.dir;
+  });
+  return rows;
+}
+
+function render() {
+  const depts = data.departments;
+  const rows = visibleRows();
+  const cols = [{ key: 'district', label: 'District' }, ...depts, { key: 'total', label: 'Total' }];
+
+  $('headRow').innerHTML = '<th>S.No</th>' + cols.map(c => {
+    const arrow = sort.col === c.key ? (sort.dir > 0 ? '▲' : '▼') : '';
+    return `<th data-col="${c.key}" class="${c.key === 'district' ? '' : 'num'}">${c.label}<span class="arrow">${arrow}</span></th>`;
+  }).join('');
+
+  const cell = (v, cls = '') => `<td class="num ${cls} ${v === 0 ? 'zero' : ''}">${fmt(v)}</td>`;
+  $('tableBody').innerHTML = rows.map((r, i) =>
+    `<tr><td>${i + 1}</td><td>${r.district}</td>` +
+    depts.map(d => cell(r[d.key])).join('') + cell(r.total, 'total') + '</tr>'
+  ).join('');
+
+  const totals = Object.fromEntries(cols.slice(1).map(c => [c.key, rows.reduce((s, r) => s + r[c.key], 0)]));
+  $('footRow').innerHTML = '<td colspan="2">Total</td>' + cols.slice(1).map(c => cell(totals[c.key])).join('');
+
+  const unit = $('metric').value === 'seedlings' ? 'seedlings' : 'geotags';
+  $('kpis').innerHTML = depts.map(d =>
+    `<div class="card-box kpi"><div class="label">${d.label}</div><div class="value">${fmt(totals[d.key])}</div></div>`
+  ).join('') + `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${fmt(totals.total)}</div></div>`;
+}
+
+function exportExcel() {
+  const depts = data.departments;
+  const rows = visibleRows();
+  const header = ['S.No', 'District', ...depts.map(d => d.label), 'Total'];
+  const body = rows.map((r, i) => [i + 1, r.district, ...depts.map(d => r[d.key]), r.total]);
+  const totals = ['', 'Total', ...[...depts.map(d => d.key), 'total'].map(k => rows.reduce((s, r) => s + r[k], 0))];
+  const ws = XLSX.utils.aoa_to_sheet([header, ...body, totals]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+  const year = $('yearFilter').value === 'all' ? 'all-years' : $('yearFilter').value;
+  XLSX.writeFile(wb, `geotag_summary_${$('metric').value}_${year}.xlsx`);
+}
+
+$('headRow').addEventListener('click', e => {
+  const th = e.target.closest('th[data-col]');
+  if (!th) return;
+  const col = th.dataset.col;
+  sort = { col, dir: sort.col === col ? -sort.dir : (col === 'district' ? 1 : -1) };
+  render();
+});
+['yearFilter', 'metric'].forEach(id => $(id).addEventListener('change', render));
+$('search').addEventListener('input', render);
+$('refreshBtn').addEventListener('click', load);
+$('exportBtn').addEventListener('click', exportExcel);
+
+load();
+setInterval(load, REFRESH_MS);
+</script>
+</body>
 </html>
