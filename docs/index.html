@@ -110,6 +110,21 @@ async function load() {
   }
 }
 
+async function importFromGit() {
+  const btn = $('gitImportBtn');
+  const before = data && data.updated;
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  await load();
+  btn.disabled = false;
+  btn.textContent = 'Import from Git';
+  if ($('status').classList.contains('error')) return;
+  const note = data.updated === before
+    ? 'No newer totals published yet; a new upload appears after the next scheduled update.'
+    : 'Newer totals loaded.';
+  setStatus(`${note} ${$('statusText').textContent}`);
+}
+
 function setStatus(text, error = false) {
   $('statusText').textContent = text;
   $('status').classList.toggle('error', error);
@@ -199,7 +214,7 @@ $('headRow').addEventListener('click', e => {
 ['yearFilter', 'metric'].forEach(id => $(id).addEventListener('change', render));
 $('search').addEventListener('input', render);
 $('refreshBtn').addEventListener('click', load);
-$('gitImportBtn').addEventListener('click', load);
+$('gitImportBtn').addEventListener('click', importFromGit);
 $('exportBtn').addEventListener('click', exportExcel);
 
 load();
