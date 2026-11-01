@@ -66,6 +66,13 @@
     </div>
   </div>
 
+  <div class="card-box mb-3 d-flex flex-wrap gap-2 align-items-center">
+    <span class="small fw-semibold me-1">Update data</span>
+    <button class="btn btn-outline-secondary btn-sm" id="directExportBtn" disabled title="Coming soon">Direct Export</button>
+    <button class="btn btn-outline-success btn-sm" id="gitImportBtn" title="Load the latest totals from the Git data">Import from Git</button>
+    <button class="btn btn-outline-secondary btn-sm" id="manualUploadBtn" disabled title="Not connected yet">Manual Upload</button>
+  </div>
+
   <div class="kpis mb-3" id="kpis"></div>
 
   <div class="card-box">
@@ -192,6 +199,7 @@ $('headRow').addEventListener('click', e => {
 ['yearFilter', 'metric'].forEach(id => $(id).addEventListener('change', render));
 $('search').addEventListener('input', render);
 $('refreshBtn').addEventListener('click', load);
+$('gitImportBtn').addEventListener('click', load);
 $('exportBtn').addEventListener('click', exportExcel);
 
 load();

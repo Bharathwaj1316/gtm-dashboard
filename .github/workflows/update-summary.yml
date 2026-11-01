@@ -1,0 +1,54 @@
+# Reads merged.csv.gz from the private gtm-data release and publishes only the
+# district totals. The raw file stays in /tmp, outside the repo, and is never committed.
+name: Update dashboard data
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/update-summary.yml
+      - scraper/build_from_merged.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-summary
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      RAW_DIR: /tmp/gtm-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download merged file
+        env:
+          GH_TOKEN: ${{ secrets.GTM_DATA_TOKEN }}
+        run: |
+          gh release download latest-export --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern 'merged.csv.gz'
+          updated=$(gh release view latest-export --repo Bharathwaj1316/gtm-data --json assets --jq '.assets[] | select(.name == "merged.csv.gz") | .updatedAt')
+          echo "FILE_UPDATED=$updated" >> "$GITHUB_ENV"
+
+      - name: Build summary
+        run: |
+          pip install --quiet pandas
+          python scraper/build_from_merged.py "$RAW_DIR/merged.csv.gz" "$FILE_UPDATED"
+
+      - name: Publish if changed
+        run: |
+          if git diff --quiet -- docs/summary.json; then
+            echo "No new data - nothing to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/summary.json
+          git commit -m "Update geotag summary"
+          git pull --rebase origin main
+          git push origin main

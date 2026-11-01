@@ -9,6 +9,17 @@ and Agriculture Department.
 ## How it works
 
 ```
+gtm-data release (merged.csv.gz)  --(GitHub Actions, every 30 min)-->  docs/summary.json  -->  GitHub Pages
+```
+
+`.github/workflows/update-summary.yml` downloads the merged file using the
+`GTM_DATA_TOKEN` secret, runs `scraper/build_from_merged.py` and commits only the
+totals when they change. "Data updated" on the page is the merged file's upload time.
+The token expires on 1 Dec 2026; replace the secret before then.
+
+## Older PC scraper
+
+```
 greentnmission.com/Export  --(scraper, every 30 min)-->  docs/summary.json  -->  GitHub Pages
 ```
 
