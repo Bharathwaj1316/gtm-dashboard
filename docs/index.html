@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js" integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs" crossorigin="anonymous"></script>
 <style>
   :root { --green: #1b7a43; --green-soft: #e8f5ee; --border: #dfe5e1; }
   body { font-family: 'Inter', sans-serif; background: #f4f7f5; color: #1f2a24; }
@@ -33,6 +34,7 @@
   .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2fb36a; margin-right: 6px; }
   .status.error .dot { background: #d9534f; }
   .light { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; margin-right: 8px; }
+  .light[hidden] { display: none; }
   .light .dot { width: 10px; height: 10px; border-radius: 50%; background: #aab4ae; flex: none; }
   .light.checking .dot { background: #2f7fd9; animation: blink 1s infinite; }
   .light.updating .dot { background: #e8890c; animation: blink 1s infinite; }
@@ -79,7 +81,10 @@
     <button class="btn btn-outline-secondary btn-sm" id="directExportBtn" disabled title="Coming soon">Direct Export</button>
     <button class="btn btn-outline-success btn-sm" id="gitImportBtn" title="Check the Git data for a newer file">Import from Git</button>
     <span class="light" id="gitLight" role="status"><span class="dot"></span><span id="gitLightText"></span></span>
-    <button class="btn btn-outline-secondary btn-sm" id="manualUploadBtn" disabled title="Not connected yet">Manual Upload</button>
+    <button class="btn btn-outline-success btn-sm" id="manualUploadBtn" title="Show a file's totals on this screen only. The file is not sent anywhere.">Manual Upload</button>
+    <input type="file" id="manualFile" accept=".csv,.gz,.xlsx,.xls" multiple hidden>
+    <span class="light" id="manualLight" role="status" hidden><span class="dot"></span><span id="manualLightText"></span></span>
+    <button class="btn btn-outline-secondary btn-sm" id="backToLiveBtn" hidden>Back to live data</button>
   </div>
 
   <div class="kpis mb-3" id="kpis"></div>
@@ -102,17 +107,56 @@ const CHECK_URL = 'https://gtm-update-check.bharathwaj200413.workers.dev/';
 const CHECK_WAIT_MS = 15 * 1000;
 const CHECK_TRIES = 24;
 
+const DEPARTMENTS = [
+  { key: 'forest', label: 'Forest Department' },
+  { key: 'other_dept', label: 'Other Departments' },
+  { key: 'coastal_habitat', label: 'Coastal Habitat' },
+  { key: 'plant_a_tree', label: 'Plant-a-Tree' },
+  { key: 'agriculture', label: 'Agriculture Department' },
+];
+// Department name in an uploaded file -> dashboard department key
+const FILE_DEPARTMENTS = {
+  'Forest Department': 'forest',
+  'Other Department': 'other_dept',
+  'Other Departments': 'other_dept',
+  'Coastal Department': 'coastal_habitat',
+  'Coastal Habitat': 'coastal_habitat',
+  'Plant-a-Tree': 'plant_a_tree',
+  'Agriculture Department': 'agriculture',
+};
+// Spellings used by other exports -> Forest Department spelling (as in scraper/build_summary.py)
+const DISTRICT_ALIASES = {
+  KALLAKURUCHI: 'KALLAKURICHI',
+  SIVAGANGAI: 'SIVAGANGA',
+  THIRUPATHUR: 'TIRUPATTUR',
+  TIRUPATHUR: 'TIRUPATTUR',
+  THOOTHUKUDI: 'TUTICORIN',
+  TRICHY: 'TIRUCHIRAPPALLI',
+  TIRUCHIRAPALLI: 'TIRUCHIRAPPALLI',
+  NILGIRIS: 'THE NILGIRIS',
+  TIRUVALLUR: 'THIRUVALLUR',
+  TIRUNELVELI: 'THIRUNELVELI',
+  KANNIYAKUMARI: 'KANYAKUMARI',
+};
+
 let data = null;
+let liveData = null;
+let uploaded = null;
 let sort = { col: 'district', dir: 1 };
 
 const $ = id => document.getElementById(id);
 const fmt = n => n.toLocaleString('en-IN');
+const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 async function load() {
+  // An uploaded file stays on screen until the viewer goes back to live data
+  if (uploaded) return;
   try {
     const res = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    data = await res.json();
+    const fresh = await res.json();
+    if (uploaded) return;
+    data = fresh;
     fillYears();
     render();
     const updated = new Date(data.updated);
@@ -122,15 +166,213 @@ async function load() {
   }
 }
 
-function setLight(state, text) {
-  $('gitLight').className = `light ${state}`;
-  $('gitLightText').textContent = text;
+function setLight(state, text, name = 'git') {
+  const light = $(`${name}Light`);
+  light.className = `light ${state}`;
+  light.hidden = !text;
+  $(`${name}LightText`).textContent = text;
+}
+
+function normDistrict(name) {
+  const d = name.trim().replace(/\s+/g, ' ').toUpperCase();
+  if (!d) return 'UNKNOWN';
+  return DISTRICT_ALIASES[d] || d;
+}
+
+// Financial year (April-March) from a date; '' if there is no usable date
+function yearFromDate(value) {
+  let y, m;
+  let match = value.match(/^(\d{4})-(\d{1,2})/);
+  if (match) {
+    [y, m] = [+match[1], +match[2]];
+  } else if ((match = value.match(/^\d{1,2}[-/](\d{1,2})[-/](\d{4})/))) {
+    [y, m] = [+match[2], +match[1]];
+  } else {
+    const d = new Date(value);
+    if (isNaN(d)) return '';
+    [y, m] = [d.getFullYear(), d.getMonth() + 1];
+  }
+  if (y < 2015 || m < 1 || m > 12) return '';
+  const start = m >= 4 ? y : y - 1;
+  return `${start}-${start + 1}`;
+}
+
+// Website exports have no Department column, so recognise them by their columns
+function departmentFromColumns(columns) {
+  const has = c => columns.includes(c);
+  if (has('Department')) return null;
+  if (has('Planted Date') && has('Number of Seedlings')) return 'plant_a_tree';
+  if (has('Number of Seedlings')) return 'agriculture';
+  if (has('Department Type') && has('Seedlings')) return 'other_dept';
+  if (has('Division') && has('Seedlings')) return has('District') ? 'forest' : 'coastal_habitat';
+  throw new Error('unrecognised columns');
+}
+
+function newTally() {
+  return { total: 0, counts: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
+}
+
+function bump(map, key, seedlings) {
+  const entry = map.get(key) || [0, 0];
+  entry[0] += 1;
+  entry[1] += seedlings;
+  map.set(key, entry);
+}
+
+function addRow(tally, row, fixedKey) {
+  const get = name => String(row[name] ?? '').trim();
+  const name = get('Department');
+  let key = fixedKey || FILE_DEPARTMENTS[name];
+  if (!key) {
+    // Never drop a row: an unexpected department still gets its own column
+    const label = name || 'Unknown department';
+    key = `file:${label}`;
+    tally.labels.set(key, label);
+  }
+  const seedlings = Number(get('Seedlings') || get('Number of Seedlings')) || 0;
+  const year = get('Year') || yearFromDate(get('Planted Date')) || yearFromDate(get('Reported At')) || 'Unknown';
+  const district = get('District');
+  const division = get('Division');
+  tally.total += 1;
+
+  if (key === 'forest' && division && district) {
+    const seen = tally.divisions.get(division) || new Map();
+    seen.set(district, (seen.get(district) || 0) + 1);
+    tally.divisions.set(division, seen);
+  }
+  // Coastal Habitat has no district: map its division via Forest data
+  if (key === 'coastal_habitat' && !district) {
+    bump(tally.coastal, JSON.stringify([division, year]), seedlings);
+  } else {
+    bump(tally.counts, JSON.stringify([normDistrict(district), key, year]), seedlings);
+  }
+}
+
+function summaryFromTally(tally, names) {
+  for (const [id, [geotags, seedlings]] of tally.coastal) {
+    const [division, year] = JSON.parse(id);
+    const seen = [...(tally.divisions.get(division) || new Map())].sort((a, b) => b[1] - a[1]);
+    const key = JSON.stringify([normDistrict(seen.length ? seen[0][0] : ''), 'coastal_habitat', year]);
+    const entry = tally.counts.get(key) || [0, 0];
+    tally.counts.set(key, [entry[0] + geotags, entry[1] + seedlings]);
+  }
+  const rows = [...tally.counts].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)]);
+  const found = new Set(rows.map(r => r[1]));
+  return {
+    updated: new Date().toISOString(),
+    departments: [
+      ...DEPARTMENTS.filter(d => found.has(d.key)),
+      ...[...tally.labels].filter(([k]) => found.has(k)).map(([key, label]) => ({ key, label })),
+    ],
+    years: [...new Set(rows.map(r => r[2]))].sort(),
+    districts: [...new Set(rows.map(r => r[0]))].sort(),
+    columns: ['district', 'department', 'year', 'geotags', 'seedlings'],
+    rows,
+    names,
+  };
+}
+
+async function csvBlob(file) {
+  const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+  if (head[0] !== 0x1f || head[1] !== 0x8b) return file;
+  return new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).blob();
+}
+
+async function readCsv(file, tally, progress) {
+  const blob = await csvBlob(file);
+  await new Promise((resolve, reject) => {
+    let fixedKey;
+    let checked = false;
+    Papa.parse(blob, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      transformHeader: h => h.replace(/^﻿/, '').trim(),
+      chunk(results, parser) {
+        try {
+          if (!checked) {
+            fixedKey = departmentFromColumns(results.meta.fields || []);
+            checked = true;
+          }
+          results.data.forEach(row => addRow(tally, row, fixedKey));
+          progress();
+        } catch (err) {
+          // Reject first: abort() fires complete, which would resolve the promise
+          reject(err);
+          parser.abort();
+        }
+      },
+      complete: resolve,
+      error: reject,
+    });
+  });
+}
+
+async function readExcel(file, tally) {
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', dense: true });
+  for (const sheetName of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '', raw: false });
+    if (!rows.length) continue;
+    const fixedKey = departmentFromColumns(Object.keys(rows[0]).map(k => k.trim()));
+    rows.forEach(row => {
+      const clean = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim(), v]));
+      addRow(tally, clean, fixedKey);
+    });
+  }
+}
+
+// The file is only read inside this browser. Nothing is sent anywhere.
+async function showUploadedFiles(files) {
+  const btn = $('manualUploadBtn');
+  btn.disabled = true;
+  const names = files.map(f => f.name).join(', ');
+  setLight('checking', 'Reading file…', 'manual');
+  try {
+    const tally = newTally();
+    for (const file of files) {
+      const progress = () => setLight('checking', `Reading file… ${fmt(tally.total)} rows`, 'manual');
+      if (/\.xlsx?$/i.test(file.name)) await readExcel(file, tally);
+      else await readCsv(file, tally, progress);
+    }
+    if (!tally.total) throw new Error('no rows');
+    const summary = summaryFromTally(tally, names);
+    if (!uploaded) liveData = data;
+    uploaded = summary;
+    data = summary;
+    sort = { col: 'district', dir: 1 };
+    fillYears();
+    render();
+    const count = summary.departments.length;
+    setStatus('Showing an uploaded file, not the live data');
+    setLight('ok', `Showing uploaded file: ${names} · ${count} department${count === 1 ? '' : 's'} · ${fmt(tally.total)} rows`, 'manual');
+    $('backToLiveBtn').hidden = false;
+  } catch (err) {
+    const reason = err.message === 'unrecognised columns'
+      ? 'its columns were not recognised'
+      : err.message === 'no rows' ? 'it has no data rows' : 'it could not be read';
+    setLight('failed', `Could not use ${names}: ${reason}.`, 'manual');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function backToLive() {
+  if (!uploaded) return;
+  uploaded = null;
+  $('backToLiveBtn').hidden = true;
+  setLight('', '', 'manual');
+  if (liveData) {
+    data = liveData;
+    sort = { col: 'district', dir: 1 };
+    fillYears();
+    render();
+  }
 }
 
 // Asks the Worker whether a newer file is in gtm-data, then waits for its totals
 async function importFromGit() {
   const btn = $('gitImportBtn');
   if (btn.disabled) return;
+  backToLive();
   btn.disabled = true;
   setLight('checking', 'Checking…');
   const before = data && data.updated;
@@ -139,6 +381,11 @@ async function importFromGit() {
       if (i) await new Promise(done => setTimeout(done, CHECK_WAIT_MS));
       const res = await fetch(CHECK_URL, { cache: 'no-store' });
       const { status, fileUpdated } = await res.json();
+      // The viewer opened a file meanwhile: leave their view alone
+      if (uploaded) {
+        setLight('', '');
+        return;
+      }
       if (status === 'failed') {
         await load();
         setLight('failed', 'Could not update from the new file. Showing the last good data.');
@@ -175,7 +422,7 @@ function fillYears() {
   const years = data.years.filter(y => y !== 'Unknown').sort().reverse();
   if (data.years.includes('Unknown')) years.push('Unknown');
   sel.innerHTML = '<option value="all">All years</option>' +
-    years.map(y => `<option value="${y}">${y}</option>`).join('');
+    years.map(y => `<option value="${esc(y)}">${esc(y)}</option>`).join('');
   sel.value = [...sel.options].some(o => o.value === current) ? current : 'all';
 }
 
@@ -212,12 +459,12 @@ function render() {
 
   $('headRow').innerHTML = '<th>S.No</th>' + cols.map(c => {
     const arrow = sort.col === c.key ? (sort.dir > 0 ? '▲' : '▼') : '';
-    return `<th data-col="${c.key}" class="${c.key === 'district' ? '' : 'num'}">${c.label}<span class="arrow">${arrow}</span></th>`;
+    return `<th data-col="${esc(c.key)}" class="${c.key === 'district' ? '' : 'num'}">${esc(c.label)}<span class="arrow">${arrow}</span></th>`;
   }).join('');
 
   const cell = (v, cls = '') => `<td class="num ${cls} ${v === 0 ? 'zero' : ''}">${fmt(v)}</td>`;
   $('tableBody').innerHTML = rows.map((r, i) =>
-    `<tr><td>${i + 1}</td><td>${r.district}</td>` +
+    `<tr><td>${i + 1}</td><td>${esc(r.district)}</td>` +
     depts.map(d => cell(r[d.key])).join('') + cell(r.total, 'total') + '</tr>'
   ).join('');
 
@@ -226,7 +473,7 @@ function render() {
 
   const unit = $('metric').value === 'seedlings' ? 'seedlings' : 'geotags';
   $('kpis').innerHTML = depts.map(d =>
-    `<div class="card-box kpi"><div class="label">${d.label}</div><div class="value">${fmt(totals[d.key])}</div></div>`
+    `<div class="card-box kpi"><div class="label">${esc(d.label)}</div><div class="value">${fmt(totals[d.key])}</div></div>`
   ).join('') + `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${fmt(totals.total)}</div></div>`;
 }
 
@@ -252,7 +499,14 @@ $('headRow').addEventListener('click', e => {
 });
 ['yearFilter', 'metric'].forEach(id => $(id).addEventListener('change', render));
 $('search').addEventListener('input', render);
-$('refreshBtn').addEventListener('click', load);
+$('refreshBtn').addEventListener('click', () => { backToLive(); load(); });
+$('manualUploadBtn').addEventListener('click', () => $('manualFile').click());
+$('manualFile').addEventListener('change', e => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (files.length) showUploadedFiles(files);
+});
+$('backToLiveBtn').addEventListener('click', () => { backToLive(); load(); });
 $('gitImportBtn').addEventListener('click', importFromGit);
 $('exportBtn').addEventListener('click', exportExcel);
 
