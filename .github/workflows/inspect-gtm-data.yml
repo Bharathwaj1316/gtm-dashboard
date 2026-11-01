@@ -1,4 +1,4 @@
-# One-time check: prints merged.xlsx's column headers, row count and totals for
+# One-time check: prints the merged file's column headers, row count and totals for
 # non-personal label columns. Logs on a public repo are public, so never print other values.
 name: Inspect gtm-data release
 
@@ -20,52 +20,66 @@ jobs:
           gh release view --repo Bharathwaj1316/gtm-data --json tagName,publishedAt,assets --jq '{tag: .tagName, published: .publishedAt, assets: [.assets[] | {name, size, updatedAt}]}'
 
       - name: Download merged file
-        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern 'merged.xlsx'
+        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern 'merged.*'
 
       - name: Print headers only
         run: |
           pip install --quiet openpyxl
           python - <<'EOF'
-          import os, re
+          import csv, gzip, os, re
           from collections import Counter, defaultdict
           from pathlib import Path
           from openpyxl import load_workbook
 
           LABEL = re.compile(r"depart|dept|year|district|source", re.I)
           PERSONAL = re.compile(r"phone|mobile|officer|user|contact|email|person", re.I)
-          MAX_VALUES = 60
+          MAX_VALUES = 100
 
           text = lambda v: "" if v is None else str(v).strip()
 
-          wb = load_workbook(Path(os.environ["RAW_DIR"]) / "merged.xlsx", read_only=True, data_only=True)
-          print("sheets:", wb.sheetnames)
-          for ws in wb.worksheets:
-              reader = ws.iter_rows(values_only=True)
+          def tables():
+              raw = Path(os.environ["RAW_DIR"])
+              if (raw / "merged.csv.gz").exists():
+                  csv.field_size_limit(10**9)
+                  with gzip.open(raw / "merged.csv.gz", "rt", encoding="utf-8-sig", errors="replace", newline="") as fh:
+                      yield "merged.csv.gz", csv.reader(fh)
+              else:
+                  wb = load_workbook(raw / "merged.xlsx", read_only=True, data_only=True)
+                  for ws in wb.worksheets:
+                      yield f"merged.xlsx / {ws.title}", ws.iter_rows(values_only=True)
+
+          for title, reader in tables():
               header = [text(c) for c in next(reader, ())]
               col = {c: i for i, c in enumerate(header)}
               labels = {i: Counter() for i, c in enumerate(header) if LABEL.search(c) and not PERSONAL.search(c)}
               by_dept = defaultdict(Counter)
+              years = defaultdict(Counter)
               rows = 0
               for row in reader:
-                  if not any(v is not None for v in row):
+                  if not any(text(v) for v in row):
                       continue
                   rows += 1
                   cell = lambda name: text(row[col[name]]) if name in col and col[name] < len(row) else ""
                   for i, seen in labels.items():
                       seen[text(row[i]) if i < len(row) else ""] += 1
-                  dept = by_dept[cell("Department") or "(blank)"]
+                  name = cell("Department") or "(blank)"
+                  dept = by_dept[name]
                   dept["rows"] += 1
                   dept["blank Year"] += not cell("Year")
                   dept["blank District"] += not cell("District")
                   dept["has Department Type"] += bool(cell("Department Type"))
                   dept["has Planted Date"] += bool(cell("Planted Date"))
+                  years[name][cell("Year") or "(blank)"] += 1
 
-              print(f"\nSHEET {ws.title}")
+              print(f"\nFILE {title}")
               print("columns:", header)
               print("rows:", rows)
               print("\nCheck by department:")
               for name, counts in by_dept.items():
                   print(f"  {name}: {dict(counts)}")
+              print("\nYear by department:")
+              for name, counts in years.items():
+                  print(f"  {name}: {dict(sorted(counts.items()))}")
               for i, seen in labels.items():
                   print(f"\n{header[i]}: {len(seen)} distinct values")
                   if len(seen) <= MAX_VALUES:
