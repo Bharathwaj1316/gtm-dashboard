@@ -20,7 +20,7 @@ jobs:
           gh release view --repo Bharathwaj1316/gtm-data --json tagName,publishedAt,assets --jq '{tag: .tagName, published: .publishedAt, assets: [.assets[] | {name, size}]}'
 
       - name: Download assets
-        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR"
+        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern '*'
 
       - name: Print headers only
         run: |
