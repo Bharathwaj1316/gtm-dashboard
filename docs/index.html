@@ -11,7 +11,7 @@
 <style>
   :root { --green: #1b7a43; --green-soft: #e8f5ee; --border: #dfe5e1; }
   body { font-family: 'Inter', sans-serif; background: #f4f7f5; color: #1f2a24; }
-  .page { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+  .page { max-width: 1400px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 1.5rem; font-weight: 700; margin: 0; }
   .sub { color: #5d6b63; font-size: .9rem; }
   .card-box { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
@@ -25,6 +25,10 @@
   .summary th, .summary td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .summary thead th { background: var(--green); color: #fff; font-weight: 600; position: sticky; top: 0; cursor: pointer; user-select: none; }
   .summary thead th.num, .summary td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .summary thead th.group { text-align: center; cursor: default; }
+  .summary th.group-start, .summary td.group-start { border-left: 2px solid var(--border); }
+  .summary thead th.group-start { border-left-color: rgba(255, 255, 255, .45); }
+  .summary thead th { border-bottom-color: rgba(255, 255, 255, .25); }
   .summary thead th .arrow { opacity: .6; font-size: .75em; margin-left: 4px; }
   .summary tbody tr:hover { background: var(--green-soft); }
   .summary td.total, .summary tfoot td { font-weight: 700; }
@@ -92,7 +96,7 @@
   <div class="card-box">
     <div class="table-wrap">
       <table class="summary" id="summaryTable">
-        <thead><tr id="headRow"></tr></thead>
+        <thead id="tableHead"><tr id="headRow"></tr><tr id="subHeadRow"></tr></thead>
         <tbody id="tableBody"></tbody>
         <tfoot><tr id="footRow"></tr></tfoot>
       </table>
@@ -114,6 +118,19 @@ const DEPARTMENTS = [
   { key: 'plant_a_tree', label: 'Plant-a-Tree' },
   { key: 'agriculture', label: 'Agriculture Department' },
 ];
+// Table column order and short headings; other departments from a file follow these
+const COLUMN_ORDER = ['forest', 'other_dept', 'agriculture', 'plant_a_tree', 'coastal_habitat'];
+const SHORT_LABELS = {
+  forest: 'Forest',
+  other_dept: 'Other Dept',
+  agriculture: 'Agriculture',
+  plant_a_tree: 'Plant-a-Tree',
+  coastal_habitat: 'Coastal',
+};
+// Species shown separately, for these departments only. Uses the English column.
+const SPECIES = [{ key: 'silver_oak', label: 'Silver Oak' }, { key: 'sandal_wood', label: 'Sandal Wood' }];
+const SPECIES_NAMES = { silveroak: 'silver_oak', sandalwood: 'sandal_wood' };
+const SPECIES_DEPARTMENTS = ['forest', 'other_dept'];
 // Department name in an uploaded file -> dashboard department key
 const FILE_DEPARTMENTS = {
   'Forest Department': 'forest',
@@ -209,7 +226,7 @@ function departmentFromColumns(columns) {
 }
 
 function newTally() {
-  return { total: 0, counts: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
+  return { total: 0, counts: new Map(), species: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
 }
 
 function bump(map, key, seedlings) {
@@ -246,6 +263,10 @@ function addRow(tally, row, fixedKey) {
   } else {
     bump(tally.counts, JSON.stringify([normDistrict(district), key, year]), seedlings);
   }
+  const species = SPECIES_NAMES[get('Species').replace(/\s+/g, '').toLowerCase()];
+  if (species && SPECIES_DEPARTMENTS.includes(key)) {
+    bump(tally.species, JSON.stringify([normDistrict(district), key, year, species]), seedlings);
+  }
 }
 
 function summaryFromTally(tally, names) {
@@ -268,6 +289,8 @@ function summaryFromTally(tally, names) {
     districts: [...new Set(rows.map(r => r[0]))].sort(),
     columns: ['district', 'department', 'year', 'geotags', 'seedlings'],
     rows,
+    species: SPECIES,
+    species_rows: [...tally.species].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)]),
     names,
   };
 }
@@ -426,17 +449,41 @@ function fillYears() {
   sel.value = [...sel.options].some(o => o.value === current) ? current : 'all';
 }
 
+function orderedDepartments() {
+  const rank = d => {
+    const i = COLUMN_ORDER.indexOf(d.key);
+    return i < 0 ? COLUMN_ORDER.length : i;
+  };
+  return [...data.departments].sort((a, b) => rank(a) - rank(b));
+}
+
+// Silver Oak and Sandal Wood columns, for the departments that are on screen
+function speciesGroups() {
+  if (!data.species_rows) return [];
+  const depts = orderedDepartments().filter(d => SPECIES_DEPARTMENTS.includes(d.key));
+  return depts.length ? data.species.map(s => ({
+    ...s,
+    cols: depts.map(d => ({ key: `${s.key}|${d.key}`, label: SHORT_LABELS[d.key] })),
+  })) : [];
+}
+
 function aggregate() {
   const year = $('yearFilter').value;
   const metric = $('metric').value === 'seedlings' ? 4 : 3;
   const depts = data.departments.map(d => d.key);
+  const speciesKeys = speciesGroups().flatMap(g => g.cols.map(c => c.key));
   const byDistrict = Object.fromEntries(
-    data.districts.map(d => [d, Object.fromEntries(depts.map(k => [k, 0]))])
+    data.districts.map(d => [d, Object.fromEntries([...depts, ...speciesKeys].map(k => [k, 0]))])
   );
   for (const row of data.rows) {
     if (year !== 'all' && row[2] !== year) continue;
     byDistrict[row[0]][row[1]] += row[metric];
   }
+  for (const row of speciesKeys.length ? data.species_rows : []) {
+    if (year !== 'all' && row[2] !== year) continue;
+    byDistrict[row[0]][`${row[3]}|${row[1]}`] += row[metric + 1];
+  }
+  // Total is the 5 departments only: the species are already counted inside them
   return Object.entries(byDistrict).map(([district, vals]) => ({
     district, ...vals, total: depts.reduce((s, k) => s + vals[k], 0)
   }));
@@ -453,44 +500,68 @@ function visibleRows() {
 }
 
 function render() {
-  const depts = data.departments;
+  const depts = orderedDepartments();
+  const groups = speciesGroups();
   const rows = visibleRows();
-  const cols = [{ key: 'district', label: 'District' }, ...depts, { key: 'total', label: 'Total' }];
+  const main = [...depts.map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }];
+  const groupOf = group => group.cols.map((c, i) => ({ ...c, start: i === 0 }));
+  const cols = [...main, ...groups.flatMap(groupOf)];
+  const seedlings = $('metric').value === 'seedlings';
 
-  $('headRow').innerHTML = '<th>S.No</th>' + cols.map(c => {
+  const heading = (c, attrs = '', cls = 'num') => {
     const arrow = sort.col === c.key ? (sort.dir > 0 ? '▲' : '▼') : '';
-    return `<th data-col="${esc(c.key)}" class="${c.key === 'district' ? '' : 'num'}">${esc(c.label)}<span class="arrow">${arrow}</span></th>`;
-  }).join('');
+    return `<th data-col="${esc(c.key)}" class="${cls}${c.start ? ' group-start' : ''}" ${attrs}>${esc(c.label)}<span class="arrow">${arrow}</span></th>`;
+  };
+  $('headRow').innerHTML = '<th rowspan="2">S.No</th>' +
+    heading({ key: 'district', label: 'District' }, 'rowspan="2"', '') +
+    `<th class="group group-start" colspan="${main.length}">${seedlings ? 'Seedlings' : 'Geotag'}</th>` +
+    groups.map(g => `<th class="group group-start" colspan="${g.cols.length}">${esc(g.label)}</th>`).join('');
+  $('subHeadRow').innerHTML = cols.map((c, i) => heading(i === 0 ? { ...c, start: true } : c)).join('');
 
   const cell = (v, cls = '') => `<td class="num ${cls} ${v === 0 ? 'zero' : ''}">${fmt(v)}</td>`;
+  const cellFor = (r, c, i) => cell(r[c.key], `${c.key === 'total' ? 'total' : ''} ${c.start || i === 0 ? 'group-start' : ''}`);
   $('tableBody').innerHTML = rows.map((r, i) =>
-    `<tr><td>${i + 1}</td><td>${esc(r.district)}</td>` +
-    depts.map(d => cell(r[d.key])).join('') + cell(r.total, 'total') + '</tr>'
+    `<tr><td>${i + 1}</td><td>${esc(r.district)}</td>` + cols.map((c, j) => cellFor(r, c, j)).join('') + '</tr>'
   ).join('');
 
-  const totals = Object.fromEntries(cols.slice(1).map(c => [c.key, rows.reduce((s, r) => s + r[c.key], 0)]));
-  $('footRow').innerHTML = '<td colspan="2">Total</td>' + cols.slice(1).map(c => cell(totals[c.key])).join('');
+  const totals = Object.fromEntries(cols.map(c => [c.key, rows.reduce((s, r) => s + r[c.key], 0)]));
+  $('footRow').innerHTML = '<td colspan="2">Total</td>' + cols.map((c, j) => cellFor(totals, c, j)).join('');
 
-  const unit = $('metric').value === 'seedlings' ? 'seedlings' : 'geotags';
+  const unit = seedlings ? 'seedlings' : 'geotags';
   $('kpis').innerHTML = depts.map(d =>
     `<div class="card-box kpi"><div class="label">${esc(d.label)}</div><div class="value">${fmt(totals[d.key])}</div></div>`
   ).join('') + `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${fmt(totals.total)}</div></div>`;
 }
 
 function exportExcel() {
-  const depts = data.departments;
+  const groups = speciesGroups();
+  const main = [...orderedDepartments().map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }];
+  const cols = [...main, ...groups.flatMap(g => g.cols)];
   const rows = visibleRows();
-  const header = ['S.No', 'District', ...depts.map(d => d.label), 'Total'];
-  const body = rows.map((r, i) => [i + 1, r.district, ...depts.map(d => r[d.key]), r.total]);
-  const totals = ['', 'Total', ...[...depts.map(d => d.key), 'total'].map(k => rows.reduce((s, r) => s + r[k], 0))];
-  const ws = XLSX.utils.aoa_to_sheet([header, ...body, totals]);
+  const blanks = n => Array(n - 1).fill('');
+  const header = ['S.No', 'District', $('metric').value === 'seedlings' ? 'Seedlings' : 'Geotag', ...blanks(main.length),
+    ...groups.flatMap(g => [g.label, ...blanks(g.cols.length)])];
+  const subHeader = ['', '', ...cols.map(c => c.label)];
+  const body = rows.map((r, i) => [i + 1, r.district, ...cols.map(c => r[c.key])]);
+  const totals = ['', 'Total', ...cols.map(c => rows.reduce((s, r) => s + r[c.key], 0))];
+  const ws = XLSX.utils.aoa_to_sheet([header, subHeader, ...body, totals]);
+  let start = 2;
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } },
+    { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } },
+    ...[main, ...groups.map(g => g.cols)].map(group => {
+      const merge = { s: { r: 0, c: start }, e: { r: 0, c: start + group.length - 1 } };
+      start += group.length;
+      return merge;
+    }),
+  ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Summary');
   const year = $('yearFilter').value === 'all' ? 'all-years' : $('yearFilter').value;
   XLSX.writeFile(wb, `geotag_summary_${$('metric').value}_${year}.xlsx`);
 }
 
-$('headRow').addEventListener('click', e => {
+$('tableHead').addEventListener('click', e => {
   const th = e.target.closest('th[data-col]');
   if (!th) return;
   const col = th.dataset.col;

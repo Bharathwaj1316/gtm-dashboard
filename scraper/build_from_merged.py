@@ -23,7 +23,11 @@ DEPARTMENT_KEYS = {
     "Plant-a-Tree": "plant_a_tree",
     "Agriculture Department": "agriculture",
 }
-COLUMNS = ["Department", "District", "Division", "Year", "Seedlings", "Number of Seedlings"]
+COLUMNS = ["Department", "District", "Division", "Year", "Seedlings", "Number of Seedlings", "Species"]
+# Species shown separately, for these departments only. Uses the English column.
+SPECIES = [("silver_oak", "Silver Oak"), ("sandal_wood", "Sandal Wood")]
+SPECIES_NAMES = {"silveroak": "silver_oak", "sandalwood": "sandal_wood"}
+SPECIES_DEPARTMENTS = ["forest", "other_dept"]
 # Refuse a file with far fewer rows than the page already shows
 MIN_ROW_RATIO = 0.9
 
@@ -52,6 +56,8 @@ def load(path):
     seedlings = df["Seedlings"].fillna(df["Number of Seedlings"])
     parts = frame(df["District"], df["Year"], seedlings)
     parts["department"] = df["Department"].map(DEPARTMENT_KEYS)
+    parts["species"] = df["Species"].str.replace(r"\s+", "", regex=True).str.lower().map(SPECIES_NAMES)
+    parts.loc[~parts["department"].isin(SPECIES_DEPARTMENTS), "species"] = None
     return parts
 
 
@@ -78,6 +84,14 @@ def build(path, updated, out_file=OUT_FILE):
     if sum(r[3] for r in rows) != len(parts):
         raise BadData(f"Counted {sum(r[3] for r in rows):,} of {len(parts):,} rows")
 
+    species = parts.dropna(subset=["species"]).groupby(["district", "department", "year", "species"]).agg(
+        geotags=("seedlings", "size"), seedlings=("seedlings", "sum")
+    )
+    species_rows = sorted(
+        [district, key, year, name, int(r.geotags), int(r.seedlings)]
+        for (district, key, year, name), r in species.iterrows()
+    )
+
     summary = {
         "updated": datetime.fromisoformat(updated.replace("Z", "+00:00")).astimezone(IST).isoformat(timespec="seconds"),
         "departments": [{"key": k, "label": l} for k, l in DEPARTMENTS],
@@ -85,6 +99,8 @@ def build(path, updated, out_file=OUT_FILE):
         "districts": sorted({r[0] for r in rows}),
         "columns": ["district", "department", "year", "geotags", "seedlings"],
         "rows": rows,
+        "species": [{"key": k, "label": l} for k, l in SPECIES],
+        "species_rows": species_rows,
     }
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(json.dumps(summary, separators=(",", ":")), encoding="utf-8")
