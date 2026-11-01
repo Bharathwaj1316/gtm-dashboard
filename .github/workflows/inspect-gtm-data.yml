@@ -1,5 +1,5 @@
-# One-time check: prints the latest gtm-data release's filenames, column headers
-# and row counts. Logs on a public repo are public, so never print row values here.
+# One-time check: prints merged.csv.gz's column headers, row count and totals for
+# non-personal label columns. Logs on a public repo are public, so never print other values.
 name: Inspect gtm-data release
 
 on:
@@ -17,32 +17,41 @@ jobs:
     steps:
       - name: Show latest release
         run: |
-          gh release view --repo Bharathwaj1316/gtm-data --json tagName,publishedAt,assets --jq '{tag: .tagName, published: .publishedAt, assets: [.assets[] | {name, size}]}'
+          gh release view --repo Bharathwaj1316/gtm-data --json tagName,publishedAt,assets --jq '{tag: .tagName, published: .publishedAt, assets: [.assets[] | {name, size, updatedAt}]}'
 
-      - name: Download assets
-        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern '*'
+      - name: Download merged file
+        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern 'merged.csv.gz'
 
       - name: Print headers only
         run: |
-          pip install --quiet openpyxl
           python - <<'EOF'
-          import csv, os
+          import csv, gzip, os, re, sys
+          from collections import Counter
           from pathlib import Path
-          from openpyxl import load_workbook
 
-          for f in sorted(Path(os.environ["RAW_DIR"]).iterdir()):
-              print(f"\n{f.name} ({f.stat().st_size:,} bytes)")
-              if f.suffix.lower() == ".csv":
-                  with f.open(encoding="utf-8-sig", errors="replace", newline="") as fh:
-                      reader = csv.reader(fh)
-                      print("  columns:", next(reader, []))
-                      print("  rows:", sum(1 for _ in reader))
-              elif f.suffix.lower() == ".xlsx":
-                  wb = load_workbook(f, read_only=True)
-                  for ws in wb.worksheets:
-                      rows = ws.iter_rows(values_only=True)
-                      print(f"  sheet {ws.title} columns:", list(next(rows, [])))
-                      print("  rows:", sum(1 for _ in rows))
+          LABEL = re.compile(r"depart|dept|year|district|source", re.I)
+          PERSONAL = re.compile(r"phone|mobile|officer|user|contact|email|person", re.I)
+          MAX_VALUES = 60
+
+          csv.field_size_limit(sys.maxsize)
+          path = Path(os.environ["RAW_DIR"]) / "merged.csv.gz"
+          with gzip.open(path, "rt", encoding="utf-8-sig", errors="replace", newline="") as fh:
+              reader = csv.reader(fh)
+              header = next(reader, [])
+              labels = {i: Counter() for i, c in enumerate(header) if LABEL.search(c) and not PERSONAL.search(c)}
+              rows = 0
+              for row in reader:
+                  rows += 1
+                  for i, seen in labels.items():
+                      seen[row[i].strip() if i < len(row) else ""] += 1
+
+          print("columns:", header)
+          print("rows:", rows)
+          for i, seen in labels.items():
+              print(f"\n{header[i]}: {len(seen)} distinct values")
+              if len(seen) <= MAX_VALUES:
+                  for value, count in seen.most_common():
+                      print(f"  {value or '(blank)'}: {count}")
               else:
-                  print("  not CSV or XLSX, headers not read")
+                  print("  too many values, not printed")
           EOF
