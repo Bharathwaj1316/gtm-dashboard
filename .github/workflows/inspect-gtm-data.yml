@@ -1,0 +1,47 @@
+# One-time check: prints the latest gtm-data release's filenames, column headers
+# and row counts. Logs on a public repo are public, so never print row values here.
+name: Inspect gtm-data release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GTM_DATA_TOKEN }}
+      RAW_DIR: ${{ runner.temp }}/gtm-data
+    steps:
+      - name: Show latest release
+        run: gh release view --repo Bharathwaj1316/gtm-data --json tagName,publishedAt,assets --jq '{tag: .tagName, published: .publishedAt, assets: [.assets[] | {name, size}]}'
+
+      - name: Download assets
+        run: gh release download --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR"
+
+      - name: Print headers only
+        run: |
+          pip install --quiet openpyxl
+          python - <<'EOF'
+          import csv, os
+          from pathlib import Path
+          from openpyxl import load_workbook
+
+          for f in sorted(Path(os.environ["RAW_DIR"]).iterdir()):
+              print(f"\n{f.name} ({f.stat().st_size:,} bytes)")
+              if f.suffix.lower() == ".csv":
+                  with f.open(encoding="utf-8-sig", errors="replace", newline="") as fh:
+                      reader = csv.reader(fh)
+                      print("  columns:", next(reader, []))
+                      print("  rows:", sum(1 for _ in reader))
+              elif f.suffix.lower() == ".xlsx":
+                  wb = load_workbook(f, read_only=True)
+                  for ws in wb.worksheets:
+                      rows = ws.iter_rows(values_only=True)
+                      print(f"  sheet {ws.title} columns:", list(next(rows, [])))
+                      print("  rows:", sum(1 for _ in rows))
+              else:
+                  print("  not CSV or XLSX, headers not read")
+          EOF
