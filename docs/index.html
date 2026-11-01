@@ -89,6 +89,9 @@
 <script>
 const DATA_URL = 'summary.json';
 const REFRESH_MS = 30 * 60 * 1000;
+const CHECK_URL = 'https://gtm-update-check.bharathwaj200413.workers.dev/';
+const CHECK_WAIT_MS = 15 * 1000;
+const CHECK_TRIES = 24;
 
 let data = null;
 let sort = { col: 'district', dir: 1 };
@@ -110,19 +113,42 @@ async function load() {
   }
 }
 
+// Asks the Worker whether a newer file is in gtm-data, then waits for its totals
 async function importFromGit() {
   const btn = $('gitImportBtn');
-  const before = data && data.updated;
+  if (btn.disabled) return;
   btn.disabled = true;
   btn.textContent = 'Checking…';
-  await load();
-  btn.disabled = false;
-  btn.textContent = 'Import from Git';
-  if ($('status').classList.contains('error')) return;
-  const note = data.updated === before
-    ? 'No newer totals published yet; a new upload appears after the next scheduled update.'
-    : 'Newer totals loaded.';
-  setStatus(`${note} ${$('statusText').textContent}`);
+  const before = data && data.updated;
+  try {
+    for (let i = 0; i < CHECK_TRIES; i++) {
+      if (i) await new Promise(done => setTimeout(done, CHECK_WAIT_MS));
+      const res = await fetch(CHECK_URL, { cache: 'no-store' });
+      const { status, fileUpdated } = await res.json();
+      if (status === 'failed' || status === 'error') {
+        await load();
+        setStatus(`Could not update from the new file. ${$('statusText').textContent}`, true);
+        return;
+      }
+      if (status === 'current') {
+        await load();
+        if (data && new Date(data.updated) >= new Date(fileUpdated)) {
+          const note = data.updated === before ? 'Already up to date.' : 'New data loaded.';
+          setStatus(`${note} ${$('statusText').textContent}`);
+          return;
+        }
+      }
+      setStatus('New file found. Updating, this takes about 2–3 minutes…');
+    }
+    await load();
+    setStatus(`Update is taking longer than usual. ${$('statusText').textContent}`);
+  } catch (err) {
+    await load();
+    setStatus(`Could not check for new data. ${$('statusText').textContent}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Import from Git';
+  }
 }
 
 function setStatus(text, error = false) {
@@ -217,7 +243,7 @@ $('refreshBtn').addEventListener('click', load);
 $('gitImportBtn').addEventListener('click', importFromGit);
 $('exportBtn').addEventListener('click', exportExcel);
 
-load();
+load().then(importFromGit);
 setInterval(load, REFRESH_MS);
 </script>
 </body>
