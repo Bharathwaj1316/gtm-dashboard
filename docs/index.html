@@ -32,6 +32,14 @@
   .status { font-size: .85rem; }
   .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2fb36a; margin-right: 6px; }
   .status.error .dot { background: #d9534f; }
+  .light { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; margin-right: 8px; }
+  .light .dot { width: 10px; height: 10px; border-radius: 50%; background: #aab4ae; flex: none; }
+  .light.checking .dot { background: #2f7fd9; animation: blink 1s infinite; }
+  .light.updating .dot { background: #e8890c; animation: blink 1s infinite; }
+  .light.ok .dot { background: #2fb36a; }
+  .light.failed .dot { background: #d9534f; }
+  @keyframes blink { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .light .dot { animation: none !important; } }
 </style>
 </head>
 <body>
@@ -69,7 +77,8 @@
   <div class="card-box mb-3 d-flex flex-wrap gap-2 align-items-center">
     <span class="small fw-semibold me-1">Update data</span>
     <button class="btn btn-outline-secondary btn-sm" id="directExportBtn" disabled title="Coming soon">Direct Export</button>
-    <button class="btn btn-outline-success btn-sm" id="gitImportBtn" title="Load the latest totals from the Git data">Import from Git</button>
+    <button class="btn btn-outline-success btn-sm" id="gitImportBtn" title="Check the Git data for a newer file">Import from Git</button>
+    <span class="light" id="gitLight" role="status"><span class="dot"></span><span id="gitLightText"></span></span>
     <button class="btn btn-outline-secondary btn-sm" id="manualUploadBtn" disabled title="Not connected yet">Manual Upload</button>
   </div>
 
@@ -113,41 +122,45 @@ async function load() {
   }
 }
 
+function setLight(state, text) {
+  $('gitLight').className = `light ${state}`;
+  $('gitLightText').textContent = text;
+}
+
 // Asks the Worker whether a newer file is in gtm-data, then waits for its totals
 async function importFromGit() {
   const btn = $('gitImportBtn');
   if (btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = 'Checking…';
+  setLight('checking', 'Checking…');
   const before = data && data.updated;
   try {
     for (let i = 0; i < CHECK_TRIES; i++) {
       if (i) await new Promise(done => setTimeout(done, CHECK_WAIT_MS));
       const res = await fetch(CHECK_URL, { cache: 'no-store' });
       const { status, fileUpdated } = await res.json();
-      if (status === 'failed' || status === 'error') {
+      if (status === 'failed') {
         await load();
-        setStatus(`Could not update from the new file. ${$('statusText').textContent}`, true);
+        setLight('failed', 'Could not update from the new file. Showing the last good data.');
         return;
       }
+      if (status === 'error') throw new Error('check failed');
       if (status === 'current') {
         await load();
         if (data && new Date(data.updated) >= new Date(fileUpdated)) {
-          const note = data.updated === before ? 'Already up to date.' : 'New data loaded.';
-          setStatus(`${note} ${$('statusText').textContent}`);
+          setLight('ok', data.updated === before ? 'Already up to date' : 'New data loaded');
           return;
         }
       }
-      setStatus('New file found. Updating, this takes about 2–3 minutes…');
+      setLight('updating', 'Updating… about 2–3 minutes');
     }
     await load();
-    setStatus(`Update is taking longer than usual. ${$('statusText').textContent}`);
+    setLight('failed', 'Update is taking longer than usual. Showing the last good data.');
   } catch (err) {
     await load();
-    setStatus(`Could not check for new data. ${$('statusText').textContent}`, true);
+    setLight('failed', 'Could not check for new data. Showing the last good data.');
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Import from Git';
   }
 }
 
