@@ -1,5 +1,5 @@
-# Reads merged.csv.gz from the private gtm-data release and publishes only the
-# district totals. The raw file stays in /tmp, outside the repo, and is never committed.
+# Reads merged.csv.gz and palm_trees.csv from the private gtm-data release and publishes
+# only the district totals. The raw files stay in /tmp, outside the repo, and are never committed.
 name: Update dashboard data
 
 on:
@@ -27,18 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download merged file
+      - name: Download data files
         env:
           GH_TOKEN: ${{ secrets.GTM_DATA_TOKEN }}
         run: |
-          gh release download latest-export --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern 'merged.csv.gz'
-          updated=$(gh release view latest-export --repo Bharathwaj1316/gtm-data --json assets --jq '.assets[] | select(.name == "merged.csv.gz") | .updatedAt')
+          gh release download latest-export --repo Bharathwaj1316/gtm-data --dir "$RAW_DIR" --pattern 'merged.csv.gz' --pattern 'palm_trees.csv'
+          updated=$(gh release view latest-export --repo Bharathwaj1316/gtm-data --json assets --jq '[.assets[] | select(.name == "merged.csv.gz" or .name == "palm_trees.csv") | .updatedAt] | max')
           echo "FILE_UPDATED=$updated" >> "$GITHUB_ENV"
 
       - name: Build summary
         run: |
           pip install --quiet pandas
-          python scraper/build_from_merged.py "$RAW_DIR/merged.csv.gz" "$FILE_UPDATED"
+          python scraper/build_from_merged.py "$RAW_DIR/merged.csv.gz" "$RAW_DIR/palm_trees.csv" "$FILE_UPDATED"
 
       - name: Publish if changed
         run: |

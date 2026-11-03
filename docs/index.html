@@ -22,7 +22,7 @@
   .kpi.total .label { color: #d6efe0; }
   .table-wrap { overflow-x: auto; }
   table.summary { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  .summary th, .summary td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .summary th, .summary td { padding: 8px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .summary thead th { background: var(--green); color: #fff; font-weight: 600; position: sticky; top: 0; cursor: pointer; user-select: none; }
   .summary thead th.num, .summary td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .summary thead th.group { text-align: center; cursor: default; }
@@ -225,8 +225,14 @@ function departmentFromColumns(columns) {
   throw new Error('unrecognised columns');
 }
 
+// A palm tree file has the same columns as a Forest export, so its name identifies it
+function fileDepartment(file, columns) {
+  if (!columns.includes('Department') && /palm/i.test(file.name)) return 'palm';
+  return departmentFromColumns(columns);
+}
+
 function newTally() {
-  return { total: 0, counts: new Map(), species: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
+  return { total: 0, counts: new Map(), species: new Map(), palm: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
 }
 
 function bump(map, key, seedlings) {
@@ -251,6 +257,12 @@ function addRow(tally, row, fixedKey) {
   const district = get('District');
   const division = get('Division');
   tally.total += 1;
+
+  // Palm trees stay separate from the department totals
+  if (key === 'palm') {
+    bump(tally.palm, JSON.stringify([normDistrict(district), year]), seedlings);
+    return;
+  }
 
   if (key === 'forest' && division && district) {
     const seen = tally.divisions.get(division) || new Map();
@@ -279,18 +291,20 @@ function summaryFromTally(tally, names) {
   }
   const rows = [...tally.counts].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)]);
   const found = new Set(rows.map(r => r[1]));
+  const palmRows = [...tally.palm].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)]);
   return {
     updated: new Date().toISOString(),
     departments: [
       ...DEPARTMENTS.filter(d => found.has(d.key)),
       ...[...tally.labels].filter(([k]) => found.has(k)).map(([key, label]) => ({ key, label })),
     ],
-    years: [...new Set(rows.map(r => r[2]))].sort(),
-    districts: [...new Set(rows.map(r => r[0]))].sort(),
+    years: [...new Set([...rows.map(r => r[2]), ...palmRows.map(r => r[1])])].sort(),
+    districts: [...new Set([...rows.map(r => r[0]), ...palmRows.map(r => r[0])])].sort(),
     columns: ['district', 'department', 'year', 'geotags', 'seedlings'],
     rows,
     species: SPECIES,
     species_rows: [...tally.species].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)]),
+    palm_rows: palmRows.length ? palmRows : undefined,
     names,
   };
 }
@@ -313,7 +327,7 @@ async function readCsv(file, tally, progress) {
       chunk(results, parser) {
         try {
           if (!checked) {
-            fixedKey = departmentFromColumns(results.meta.fields || []);
+            fixedKey = fileDepartment(file, results.meta.fields || []);
             checked = true;
           }
           results.data.forEach(row => addRow(tally, row, fixedKey));
@@ -335,7 +349,7 @@ async function readExcel(file, tally) {
   for (const sheetName of wb.SheetNames) {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '', raw: false });
     if (!rows.length) continue;
-    const fixedKey = departmentFromColumns(Object.keys(rows[0]).map(k => k.trim()));
+    const fixedKey = fileDepartment(file, Object.keys(rows[0]).map(k => k.trim()));
     rows.forEach(row => {
       const clean = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim(), v]));
       addRow(tally, clean, fixedKey);
@@ -366,7 +380,11 @@ async function showUploadedFiles(files) {
     render();
     const count = summary.departments.length;
     setStatus('Showing an uploaded file, not the live data');
-    setLight('ok', `Showing uploaded file: ${names} · ${count} department${count === 1 ? '' : 's'} · ${fmt(tally.total)} rows`, 'manual');
+    const contents = [
+      ...(count ? [`${count} department${count === 1 ? '' : 's'}`] : []),
+      ...(summary.palm_rows ? ['Palm Tree'] : []),
+    ].join(' + ');
+    setLight('ok', `Showing uploaded file: ${names} · ${contents} · ${fmt(tally.total)} rows`, 'manual');
     $('backToLiveBtn').hidden = false;
   } catch (err) {
     const reason = err.message === 'unrecognised columns'
@@ -472,8 +490,9 @@ function aggregate() {
   const metric = $('metric').value === 'seedlings' ? 4 : 3;
   const depts = data.departments.map(d => d.key);
   const speciesKeys = speciesGroups().flatMap(g => g.cols.map(c => c.key));
+  const palmRows = data.palm_rows || [];
   const byDistrict = Object.fromEntries(
-    data.districts.map(d => [d, Object.fromEntries([...depts, ...speciesKeys].map(k => [k, 0]))])
+    data.districts.map(d => [d, Object.fromEntries([...depts, ...speciesKeys, 'palm'].map(k => [k, 0]))])
   );
   for (const row of data.rows) {
     if (year !== 'all' && row[2] !== year) continue;
@@ -483,7 +502,13 @@ function aggregate() {
     if (year !== 'all' && row[2] !== year) continue;
     byDistrict[row[0]][`${row[3]}|${row[1]}`] += row[metric + 1];
   }
-  // Total is the 5 departments only: the species are already counted inside them
+  for (const row of palmRows) {
+    if (year !== 'all' && row[1] !== year) continue;
+    byDistrict[row[0]].palm += row[metric - 1];
+  }
+  // Total is the 5 departments only: the species are already counted inside them,
+  // and palm trees are a separate total
+
   return Object.entries(byDistrict).map(([district, vals]) => ({
     district, ...vals, total: depts.reduce((s, k) => s + vals[k], 0)
   }));
@@ -503,9 +528,13 @@ function render() {
   const depts = orderedDepartments();
   const groups = speciesGroups();
   const rows = visibleRows();
-  const main = [...depts.map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }];
+  const main = depts.length
+    ? [...depts.map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }]
+    : [];
   const groupOf = group => group.cols.map((c, i) => ({ ...c, start: i === 0 }));
-  const cols = [...main, ...groups.flatMap(groupOf)];
+  const palm = data.palm_rows ? [{ key: 'palm', label: 'Palm Tree', start: true }] : [];
+  const grouped = [...main, ...groups.flatMap(groupOf)];
+  const cols = [...grouped, ...palm];
   const seedlings = $('metric').value === 'seedlings';
 
   const heading = (c, attrs = '', cls = 'num') => {
@@ -514,9 +543,10 @@ function render() {
   };
   $('headRow').innerHTML = '<th rowspan="2">S.No</th>' +
     heading({ key: 'district', label: 'District' }, 'rowspan="2"', '') +
-    `<th class="group group-start" colspan="${main.length}">${seedlings ? 'Seedlings' : 'Geotag'}</th>` +
-    groups.map(g => `<th class="group group-start" colspan="${g.cols.length}">${esc(g.label)}</th>`).join('');
-  $('subHeadRow').innerHTML = cols.map((c, i) => heading(i === 0 ? { ...c, start: true } : c)).join('');
+    (main.length ? `<th class="group group-start" colspan="${main.length}">${seedlings ? 'Seedlings' : 'Geotag'}</th>` : '') +
+    groups.map(g => `<th class="group group-start" colspan="${g.cols.length}">${esc(g.label)}</th>`).join('') +
+    palm.map(c => heading(c, 'rowspan="2"')).join('');
+  $('subHeadRow').innerHTML = grouped.map((c, i) => heading(i === 0 ? { ...c, start: true } : c)).join('');
 
   const cell = (v, cls = '') => `<td class="num ${cls} ${v === 0 ? 'zero' : ''}">${fmt(v)}</td>`;
   const cellFor = (r, c, i) => cell(r[c.key], `${c.key === 'total' ? 'total' : ''} ${c.start || i === 0 ? 'group-start' : ''}`);
@@ -530,18 +560,27 @@ function render() {
   const unit = seedlings ? 'seedlings' : 'geotags';
   $('kpis').innerHTML = depts.map(d =>
     `<div class="card-box kpi"><div class="label">${esc(d.label)}</div><div class="value">${fmt(totals[d.key])}</div></div>`
-  ).join('') + `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${fmt(totals.total)}</div></div>`;
+  ).join('') +
+    (main.length ? `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${fmt(totals.total)}</div></div>` : '') +
+    (palm.length ? `<div class="card-box kpi total"><div class="label">Palm Tree ${unit} (separate)</div><div class="value">${fmt(totals.palm)}</div></div>` : '');
 }
 
 function exportExcel() {
   const groups = speciesGroups();
-  const main = [...orderedDepartments().map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }];
-  const cols = [...main, ...groups.flatMap(g => g.cols)];
+  const depts = orderedDepartments();
+  const main = depts.length
+    ? [...depts.map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }]
+    : [];
+  const palm = data.palm_rows ? [{ key: 'palm', label: 'Palm Tree' }] : [];
+  const grouped = [...main, ...groups.flatMap(g => g.cols)];
+  const cols = [...grouped, ...palm];
   const rows = visibleRows();
   const blanks = n => Array(n - 1).fill('');
-  const header = ['S.No', 'District', $('metric').value === 'seedlings' ? 'Seedlings' : 'Geotag', ...blanks(main.length),
-    ...groups.flatMap(g => [g.label, ...blanks(g.cols.length)])];
-  const subHeader = ['', '', ...cols.map(c => c.label)];
+  const header = ['S.No', 'District',
+    ...(main.length ? [$('metric').value === 'seedlings' ? 'Seedlings' : 'Geotag', ...blanks(main.length)] : []),
+    ...groups.flatMap(g => [g.label, ...blanks(g.cols.length)]),
+    ...palm.map(c => c.label)];
+  const subHeader = ['', '', ...grouped.map(c => c.label), ...palm.map(() => '')];
   const body = rows.map((r, i) => [i + 1, r.district, ...cols.map(c => r[c.key])]);
   const totals = ['', 'Total', ...cols.map(c => rows.reduce((s, r) => s + r[c.key], 0))];
   const ws = XLSX.utils.aoa_to_sheet([header, subHeader, ...body, totals]);
@@ -549,11 +588,12 @@ function exportExcel() {
   ws['!merges'] = [
     { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } },
     { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } },
-    ...[main, ...groups.map(g => g.cols)].map(group => {
+    ...[main, ...groups.map(g => g.cols)].filter(group => group.length).map(group => {
       const merge = { s: { r: 0, c: start }, e: { r: 0, c: start + group.length - 1 } };
       start += group.length;
       return merge;
-    }),
+    }).filter(m => m.e.c > m.s.c),
+    ...palm.map(() => ({ s: { r: 0, c: start }, e: { r: 1, c: start } })),
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Summary');

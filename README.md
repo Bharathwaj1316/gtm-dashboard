@@ -9,12 +9,13 @@ and Agriculture Department.
 ## How it works
 
 ```
-gtm-data release (merged.csv.gz)  --(GitHub Actions, every 30 min)-->  docs/summary.json  -->  GitHub Pages
+gtm-data release (merged.csv.gz, palm_trees.csv)  --(GitHub Actions, every 30 min)-->  docs/summary.json  -->  GitHub Pages
 ```
 
-`.github/workflows/update-summary.yml` downloads the merged file using the
+`.github/workflows/update-summary.yml` downloads the two files using the
 `GTM_DATA_TOKEN` secret, runs `scraper/build_from_merged.py` and commits only the
-totals when they change. "Data updated" on the page is the merged file's upload time.
+totals when they change. Palm Tree stays separate from the 5-department Total.
+"Data updated" on the page is the newest file's upload time.
 The token expires on 1 Dec 2026; replace the secret before then.
 
 ## Older PC scraper

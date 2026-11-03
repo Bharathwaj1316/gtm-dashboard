@@ -28,6 +28,7 @@ COLUMNS = ["Department", "District", "Division", "Year", "Seedlings", "Number of
 SPECIES = [("silver_oak", "Silver Oak"), ("sandal_wood", "Sandal Wood")]
 SPECIES_NAMES = {"silveroak": "silver_oak", "sandalwood": "sandal_wood"}
 SPECIES_DEPARTMENTS = ["forest", "other_dept"]
+PALM_COLUMNS = ["District", "Year", "Seedlings"]
 # Refuse a file with far fewer rows than the page already shows
 MIN_ROW_RATIO = 0.9
 
@@ -61,12 +62,20 @@ def load(path):
     return parts
 
 
-def build(path, updated, out_file=OUT_FILE):
+def load_palm(path):
+    df = pd.read_csv(path, usecols=PALM_COLUMNS, dtype=str, low_memory=False)
+    if df.empty:
+        raise BadData("The palm tree file has no rows")
+    return frame(df["District"], df["Year"], df["Seedlings"])
+
+
+def build(path, palm_path, updated, out_file=OUT_FILE):
     parts = load(path)
+    palm = load_palm(palm_path)
     old = json.loads(out_file.read_text(encoding="utf-8")) if out_file.exists() else None
 
     if old:
-        new_districts = set(parts["district"]) - set(old["districts"]) - {"UNKNOWN"}
+        new_districts = (set(parts["district"]) | set(palm["district"])) - set(old["districts"]) - {"UNKNOWN"}
         if new_districts:
             raise BadData(f"Unrecognised districts: {sorted(new_districts)}")
         old_total = sum(r[3] for r in old["rows"])
@@ -92,31 +101,44 @@ def build(path, updated, out_file=OUT_FILE):
         for (district, key, year, name), r in species.iterrows()
     )
 
+    # Palm trees come from their own file and stay separate from the department totals
+    palm_rows = sorted(
+        [district, year, int(r.geotags), int(r.seedlings)]
+        for (district, year), r in palm.groupby(["district", "year"]).agg(
+            geotags=("seedlings", "size"), seedlings=("seedlings", "sum")
+        ).iterrows()
+    )
+    if sum(r[2] for r in palm_rows) != len(palm):
+        raise BadData(f"Counted {sum(r[2] for r in palm_rows):,} of {len(palm):,} palm rows")
+
     summary = {
         "updated": datetime.fromisoformat(updated.replace("Z", "+00:00")).astimezone(IST).isoformat(timespec="seconds"),
         "departments": [{"key": k, "label": l} for k, l in DEPARTMENTS],
-        "years": sorted({r[2] for r in rows}),
-        "districts": sorted({r[0] for r in rows}),
+        "years": sorted({r[2] for r in rows} | {r[1] for r in palm_rows}),
+        "districts": sorted({r[0] for r in rows} | {r[0] for r in palm_rows}),
         "columns": ["district", "department", "year", "geotags", "seedlings"],
         "rows": rows,
         "species": [{"key": k, "label": l} for k, l in SPECIES],
         "species_rows": species_rows,
+        "palm_rows": palm_rows,
     }
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(json.dumps(summary, separators=(",", ":")), encoding="utf-8")
 
     for key, label in DEPARTMENTS:
         print(f"  {label}: {sum(r[3] for r in rows if r[1] == key):,} geotags")
+    print(f"  Palm Tree (separate): {sum(r[2] for r in palm_rows):,} geotags")
     return summary
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("merged", type=Path, help="path to merged.csv.gz")
-    parser.add_argument("updated", help="the file's upload time (ISO 8601)")
+    parser.add_argument("palm", type=Path, help="path to palm_trees.csv")
+    parser.add_argument("updated", help="the newest file's upload time (ISO 8601)")
     parser.add_argument("--out", type=Path, default=OUT_FILE)
     args = parser.parse_args()
     try:
-        build(args.merged, args.updated, args.out)
+        build(args.merged, args.palm, args.updated, args.out)
     except BadData as err:
         sys.exit(f"Not publishing: {err}")
