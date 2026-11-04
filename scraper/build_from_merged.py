@@ -28,7 +28,8 @@ COLUMNS = ["Department", "District", "Division", "Year", "Seedlings", "Number of
 SPECIES = [("silver_oak", "Silver Oak"), ("sandal_wood", "Sandal Wood")]
 SPECIES_NAMES = {"silveroak": "silver_oak", "sandalwood": "sandal_wood"}
 SPECIES_DEPARTMENTS = ["forest", "other_dept"]
-PALM_COLUMNS = ["District", "Year", "Seedlings"]
+PALM_COLUMNS = ["District", "Year", "Seedlings", "Department Type"]
+PALM_FOREST_TYPE = "Forest Department"
 # Refuse a file with far fewer rows than the page already shows
 MIN_ROW_RATIO = 0.9
 
@@ -66,7 +67,11 @@ def load_palm(path):
     df = pd.read_csv(path, usecols=PALM_COLUMNS, dtype=str, low_memory=False)
     if df.empty:
         raise BadData("The palm tree file has no rows")
-    return frame(df["District"], df["Year"], df["Seedlings"])
+    palm = frame(df["District"], df["Year"], df["Seedlings"])
+    # Forest, or Other Dept for any other type. A blank type counts only in the palm total.
+    types = df["Department Type"].fillna("").str.strip()
+    palm["department"] = types.map(lambda t: None if not t else "forest" if t == PALM_FOREST_TYPE else "other_dept")
+    return palm
 
 
 def build(path, palm_path, updated, out_file=OUT_FILE):
@@ -110,6 +115,12 @@ def build(path, palm_path, updated, out_file=OUT_FILE):
     )
     if sum(r[2] for r in palm_rows) != len(palm):
         raise BadData(f"Counted {sum(r[2] for r in palm_rows):,} of {len(palm):,} palm rows")
+    palm_dept_rows = sorted(
+        [district, year, key, int(r.geotags), int(r.seedlings)]
+        for (district, year, key), r in palm.dropna(subset=["department"]).groupby(["district", "year", "department"]).agg(
+            geotags=("seedlings", "size"), seedlings=("seedlings", "sum")
+        ).iterrows()
+    )
 
     summary = {
         "updated": datetime.fromisoformat(updated.replace("Z", "+00:00")).astimezone(IST).isoformat(timespec="seconds"),
@@ -121,6 +132,7 @@ def build(path, palm_path, updated, out_file=OUT_FILE):
         "species": [{"key": k, "label": l} for k, l in SPECIES],
         "species_rows": species_rows,
         "palm_rows": palm_rows,
+        "palm_dept_rows": palm_dept_rows,
     }
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(json.dumps(summary, separators=(",", ":")), encoding="utf-8")

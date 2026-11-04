@@ -21,8 +21,8 @@
   .kpi.total { background: var(--green); color: #fff; border-color: var(--green); }
   .kpi.total .label { color: #d6efe0; }
   .table-wrap { overflow-x: auto; }
-  table.summary { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  .summary th, .summary td { padding: 8px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  table.summary { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  .summary th, .summary td { padding: 7px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .summary thead th { background: var(--green); color: #fff; font-weight: 600; position: sticky; top: 0; cursor: pointer; user-select: none; }
   .summary thead th.num, .summary td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .summary thead th.group { text-align: center; cursor: default; }
@@ -246,7 +246,7 @@ function fileDepartment(file, columns) {
 }
 
 function newTally() {
-  return { total: 0, counts: new Map(), species: new Map(), palm: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
+  return { total: 0, counts: new Map(), species: new Map(), palm: new Map(), palmDept: new Map(), coastal: new Map(), divisions: new Map(), labels: new Map() };
 }
 
 function bump(map, key, seedlings) {
@@ -275,6 +275,12 @@ function addRow(tally, row, fixedKey) {
   // Palm trees stay separate from the department totals
   if (key === 'palm') {
     bump(tally.palm, JSON.stringify([normDistrict(district), year]), seedlings);
+    // Forest, or Other Dept for any other type. A blank type counts only in the palm total.
+    const type = get('Department Type');
+    if (type) {
+      const dept = type === 'Forest Department' ? 'forest' : 'other_dept';
+      bump(tally.palmDept, JSON.stringify([normDistrict(district), year, dept]), seedlings);
+    }
     return;
   }
 
@@ -319,6 +325,9 @@ function summaryFromTally(tally, names) {
     species: SPECIES,
     species_rows: [...tally.species].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)]),
     palm_rows: palmRows.length ? palmRows : undefined,
+    palm_dept_rows: palmRows.length
+      ? [...tally.palmDept].map(([id, [geotags, seedlings]]) => [...JSON.parse(id), geotags, Math.trunc(seedlings)])
+      : undefined,
     names,
   };
 }
@@ -499,6 +508,17 @@ function speciesGroups() {
   })) : [];
 }
 
+// Palm Tree columns: split by department once the data has the split
+function palmColumns() {
+  if (!data.palm_rows) return [];
+  if (!data.palm_dept_rows) return [{ key: 'palm', label: 'Palm Tree' }];
+  return [
+    { key: 'palm|forest', label: 'Forest' },
+    { key: 'palm|other_dept', label: 'Other Dept' },
+    { key: 'palm', label: 'Palm Total' },
+  ];
+}
+
 function aggregate() {
   const year = $('yearFilter').value;
   const metric = $('metric').value === 'seedlings' ? 4 : 3;
@@ -506,7 +526,7 @@ function aggregate() {
   const speciesKeys = speciesGroups().flatMap(g => g.cols.map(c => c.key));
   const palmRows = data.palm_rows || [];
   const byDistrict = Object.fromEntries(
-    data.districts.map(d => [d, Object.fromEntries([...depts, ...speciesKeys, 'palm'].map(k => [k, 0]))])
+    data.districts.map(d => [d, Object.fromEntries([...depts, ...speciesKeys, 'palm', 'palm|forest', 'palm|other_dept'].map(k => [k, 0]))])
   );
   for (const row of data.rows) {
     if (year !== 'all' && row[2] !== year) continue;
@@ -519,6 +539,10 @@ function aggregate() {
   for (const row of palmRows) {
     if (year !== 'all' && row[1] !== year) continue;
     byDistrict[row[0]].palm += row[metric - 1];
+  }
+  for (const row of data.palm_dept_rows || []) {
+    if (year !== 'all' && row[1] !== year) continue;
+    byDistrict[row[0]][`palm|${row[2]}`] += row[metric];
   }
   // Total is the 5 departments only: the species are already counted inside them,
   // and palm trees are a separate total
@@ -572,8 +596,10 @@ function render() {
     ? [...depts.map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }]
     : [];
   const groupOf = group => group.cols.map((c, i) => ({ ...c, start: i === 0 }));
-  const palm = data.palm_rows ? [{ key: 'palm', label: 'Palm Tree', start: true }] : [];
-  const grouped = [...main, ...groups.flatMap(groupOf)];
+  const palmCols = palmColumns();
+  const palmSplit = palmCols.length > 1;
+  const palm = palmSplit ? [] : palmCols.map(c => ({ ...c, start: true }));
+  const grouped = [...main, ...groups.flatMap(groupOf), ...(palmSplit ? groupOf({ cols: palmCols }) : [])];
   const cols = [...grouped, ...palm];
   const seedlings = $('metric').value === 'seedlings';
 
@@ -585,11 +611,12 @@ function render() {
     heading({ key: 'district', label: 'District' }, 'rowspan="2"', '') +
     (main.length ? `<th class="group group-start" colspan="${main.length}">${seedlings ? 'Seedlings' : 'Geotag'}</th>` : '') +
     groups.map(g => `<th class="group group-start" colspan="${g.cols.length}">${esc(g.label)}</th>`).join('') +
+    (palmSplit ? `<th class="group group-start" colspan="${palmCols.length}">Palm Tree</th>` : '') +
     palm.map(c => heading(c, 'rowspan="2"')).join('');
   $('subHeadRow').innerHTML = grouped.map((c, i) => heading(i === 0 ? { ...c, start: true } : c)).join('');
 
   const cell = (v, cls = '') => `<td class="num ${cls} ${v === 0 ? 'zero' : ''}">${fmt(v)}</td>`;
-  const cellFor = (r, c, i) => cell(r[c.key], `${c.key === 'total' ? 'total' : ''} ${c.start || i === 0 ? 'group-start' : ''}`);
+  const cellFor = (r, c, i) => cell(r[c.key], `${c.key === 'total' || c.key === 'palm' ? 'total' : ''} ${c.start || i === 0 ? 'group-start' : ''}`);
   $('tableBody').innerHTML = rows.map((r, i) =>
     `<tr><td>${i + 1}</td><td>${esc(r.district)}</td>` + cols.map((c, j) => cellFor(r, c, j)).join('') + '</tr>'
   ).join('');
@@ -606,7 +633,7 @@ function render() {
     `<div class="card-box kpi"><div class="label">${esc(d.label)}</div><div class="value">${card(d.key)}</div></div>`
   ).join('') +
     (main.length ? `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${card('total')}</div></div>` : '') +
-    (palm.length ? `<div class="card-box kpi total"><div class="label">Palm Tree ${unit} (separate)</div><div class="value">${card('palm')}</div></div>` : '');
+    (palmCols.length ? `<div class="card-box kpi total"><div class="label">Palm Tree ${unit} (separate)</div><div class="value">${card('palm')}</div></div>` : '');
 }
 
 function exportExcel() {
@@ -615,14 +642,17 @@ function exportExcel() {
   const main = depts.length
     ? [...depts.map(d => ({ key: d.key, label: SHORT_LABELS[d.key] || d.label })), { key: 'total', label: 'Total' }]
     : [];
-  const palm = data.palm_rows ? [{ key: 'palm', label: 'Palm Tree' }] : [];
-  const grouped = [...main, ...groups.flatMap(g => g.cols)];
+  const palmCols = palmColumns();
+  const palmSplit = palmCols.length > 1;
+  const palm = palmSplit ? [] : palmCols;
+  const grouped = [...main, ...groups.flatMap(g => g.cols), ...(palmSplit ? palmCols : [])];
   const cols = [...grouped, ...palm];
   const rows = visibleRows();
   const blanks = n => Array(n - 1).fill('');
   const header = ['S.No', 'District',
     ...(main.length ? [$('metric').value === 'seedlings' ? 'Seedlings' : 'Geotag', ...blanks(main.length)] : []),
     ...groups.flatMap(g => [g.label, ...blanks(g.cols.length)]),
+    ...(palmSplit ? ['Palm Tree', ...blanks(palmCols.length)] : []),
     ...palm.map(c => c.label)];
   const subHeader = ['', '', ...grouped.map(c => c.label), ...palm.map(() => '')];
   const body = rows.map((r, i) => [i + 1, r.district, ...cols.map(c => r[c.key])]);
@@ -632,7 +662,7 @@ function exportExcel() {
   ws['!merges'] = [
     { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } },
     { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } },
-    ...[main, ...groups.map(g => g.cols)].filter(group => group.length).map(group => {
+    ...[main, ...groups.map(g => g.cols), ...(palmSplit ? [palmCols] : [])].filter(group => group.length).map(group => {
       const merge = { s: { r: 0, c: start }, e: { r: 0, c: start + group.length - 1 } };
       start += group.length;
       return merge;
