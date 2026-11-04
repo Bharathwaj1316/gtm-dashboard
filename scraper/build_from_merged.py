@@ -23,7 +23,9 @@ DEPARTMENT_KEYS = {
     "Plant-a-Tree": "plant_a_tree",
     "Agriculture Department": "agriculture",
 }
-COLUMNS = ["Department", "District", "Division", "Year", "Seedlings", "Number of Seedlings", "Species"]
+COLUMNS = ["Department", "District", "Division", "Year", "Seedlings", "Species"]
+# Older exports keep some departments' seedlings here instead of in Seedlings
+OPTIONAL_SEEDLINGS = "Number of Seedlings"
 # Species shown separately, for these departments only. Uses the English column.
 SPECIES = [("silver_oak", "Silver Oak"), ("sandal_wood", "Sandal Wood")]
 SPECIES_NAMES = {"silveroak": "silver_oak", "sandalwood": "sandal_wood"}
@@ -39,7 +41,10 @@ class BadData(Exception):
 
 
 def load(path):
-    df = pd.read_csv(path, usecols=COLUMNS, dtype=str, low_memory=False)
+    df = pd.read_csv(path, usecols=lambda c: c in COLUMNS or c == OPTIONAL_SEEDLINGS, dtype=str, low_memory=False)
+    missing = [c for c in COLUMNS if c not in df.columns]
+    if missing:
+        raise BadData(f"Missing columns: {missing}")
     df["Department"] = df["Department"].str.strip()
 
     found = set(df["Department"].dropna())
@@ -55,7 +60,9 @@ def load(path):
     coastal = df["Department"] == "Coastal Department"
     df.loc[coastal, "District"] = df.loc[coastal, "Division"].map(div_to_district)
 
-    seedlings = df["Seedlings"].fillna(df["Number of Seedlings"])
+    seedlings = df["Seedlings"]
+    if OPTIONAL_SEEDLINGS in df.columns:
+        seedlings = seedlings.fillna(df[OPTIONAL_SEEDLINGS])
     parts = frame(df["District"], df["Year"], seedlings)
     parts["department"] = df["Department"].map(DEPARTMENT_KEYS)
     parts["species"] = df["Species"].str.replace(r"\s+", "", regex=True).str.lower().map(SPECIES_NAMES)
