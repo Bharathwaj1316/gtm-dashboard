@@ -34,6 +34,8 @@
   .summary td.total, .summary tfoot td { font-weight: 700; }
   .summary tfoot td { background: var(--green-soft); border-top: 2px solid var(--green); }
   .zero { color: #aab4ae; }
+  .card-box[hidden] { display: none; }
+  #unknownTable thead th { cursor: default; }
   .status { font-size: .85rem; }
   .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2fb36a; margin-right: 6px; }
   .status.error .dot { background: #d9534f; }
@@ -99,6 +101,18 @@
         <thead id="tableHead"><tr id="headRow"></tr><tr id="subHeadRow"></tr></thead>
         <tbody id="tableBody"></tbody>
         <tfoot><tr id="footRow"></tr></tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="card-box mt-3" id="unknownBox" hidden>
+    <h2 class="h6 fw-bold mb-1">Records with no district (UNKNOWN)</h2>
+    <div class="sub mb-2">These records have no district in the data file, so they are not in the table above. They are included in the cards at the top.</div>
+    <div class="table-wrap">
+      <table class="summary" id="unknownTable">
+        <thead><tr><th>Data</th><th>Source file</th><th class="num">Geotags</th><th class="num">Seedlings</th></tr></thead>
+        <tbody id="unknownBody"></tbody>
+        <tfoot><tr id="unknownFoot"></tr></tfoot>
       </table>
     </div>
   </div>
@@ -516,12 +530,38 @@ function aggregate() {
 
 function visibleRows() {
   const q = $('search').value.trim().toUpperCase();
-  const rows = aggregate().filter(r => !q || r.district.includes(q));
+  // Records with no district have their own table below
+  const rows = aggregate().filter(r => r.district !== 'UNKNOWN' && (!q || r.district.includes(q)));
   rows.sort((a, b) => {
     const x = a[sort.col], y = b[sort.col];
     return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sort.dir;
   });
   return rows;
+}
+
+// Records with no district for the selected year: [label, source file, geotags, seedlings]
+function unknownRecords() {
+  const year = $('yearFilter').value;
+  const inYear = y => year === 'all' || y === year;
+  const source = file => (uploaded ? 'Uploaded file' : file);
+  const sum = (rows, g, n) => rows.reduce((t, r) => [t[0] + r[g], t[1] + r[n]], [0, 0]);
+  const unknown = data.rows.filter(r => r[0] === 'UNKNOWN' && inYear(r[2]));
+  const records = orderedDepartments()
+    .map(d => [d.label, source('merged.csv.gz'), ...sum(unknown.filter(r => r[1] === d.key), 3, 4)]);
+  const palm = (data.palm_rows || []).filter(r => r[0] === 'UNKNOWN' && inYear(r[1]));
+  records.push(['Palm Tree', source('palm_trees.csv'), ...sum(palm, 2, 3)]);
+  return records.filter(r => r[2] > 0);
+}
+
+function renderUnknown() {
+  const records = unknownRecords();
+  $('unknownBox').hidden = !records.length;
+  const num = v => `<td class="num">${fmt(v)}</td>`;
+  $('unknownBody').innerHTML = records.map(r =>
+    `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td>${num(r[2])}${num(r[3])}</tr>`
+  ).join('');
+  $('unknownFoot').innerHTML = '<td colspan="2">Total</td>' +
+    num(records.reduce((s, r) => s + r[2], 0)) + num(records.reduce((s, r) => s + r[3], 0));
 }
 
 function render() {
@@ -558,11 +598,15 @@ function render() {
   $('footRow').innerHTML = '<td colspan="2">Total</td>' + cols.map((c, j) => cellFor(totals, c, j)).join('');
 
   const unit = seedlings ? 'seedlings' : 'geotags';
+  renderUnknown();
+  // Cards include the no-district records unless a district search is narrowing the view
+  const unknownRow = $('search').value.trim() ? null : aggregate().find(r => r.district === 'UNKNOWN');
+  const card = key => fmt(totals[key] + (unknownRow ? unknownRow[key] : 0));
   $('kpis').innerHTML = depts.map(d =>
-    `<div class="card-box kpi"><div class="label">${esc(d.label)}</div><div class="value">${fmt(totals[d.key])}</div></div>`
+    `<div class="card-box kpi"><div class="label">${esc(d.label)}</div><div class="value">${card(d.key)}</div></div>`
   ).join('') +
-    (main.length ? `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${fmt(totals.total)}</div></div>` : '') +
-    (palm.length ? `<div class="card-box kpi total"><div class="label">Palm Tree ${unit} (separate)</div><div class="value">${fmt(totals.palm)}</div></div>` : '');
+    (main.length ? `<div class="card-box kpi total"><div class="label">Total ${unit}</div><div class="value">${card('total')}</div></div>` : '') +
+    (palm.length ? `<div class="card-box kpi total"><div class="label">Palm Tree ${unit} (separate)</div><div class="value">${card('palm')}</div></div>` : '');
 }
 
 function exportExcel() {
@@ -597,6 +641,11 @@ function exportExcel() {
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+  const unknown = unknownRecords();
+  if (unknown.length) {
+    const noDistrict = XLSX.utils.aoa_to_sheet([['Data', 'Source file', 'Geotags', 'Seedlings'], ...unknown]);
+    XLSX.utils.book_append_sheet(wb, noDistrict, 'No district');
+  }
   const year = $('yearFilter').value === 'all' ? 'all-years' : $('yearFilter').value;
   XLSX.writeFile(wb, `geotag_summary_${$('metric').value}_${year}.xlsx`);
 }
